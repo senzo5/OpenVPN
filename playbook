@@ -1,0 +1,85 @@
+---
+- name: Install Docker and Pritunl VPN on RHEL 9
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Update all packages
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: Install prerequisites
+      dnf:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+
+    - name: Add Docker CE repository
+      command: |
+        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+
+    - name: Install Docker CE
+      dnf:
+        name: docker-ce
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Download Docker Compose
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/1.24.0/docker-compose-{{ ansible_system }}-{{ ansible_architecture }}"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Create VPN directory
+      file:
+        path: /vpn
+        state: directory
+
+    - name: Create Docker Compose file for Pritunl and MongoDB
+      copy:
+        dest: /vpn/docker-compose.yml
+        content: |
+          version: '3'
+          services:
+              vpn:
+                  image: jippi/pritunl:1.29.2051.18
+                  privileged: true
+                  restart: always
+                  environment:
+                      PRITUNL_MONGODB_URI: "mongodb://mongo:27017/pritunl"
+                  volumes:
+                      - /vpn/data/pritunl:/var/lib/pritunl
+                  ports:
+                      - 114:443
+                      - 514:514/udp
+                  depends_on:
+                      - mongo
+              mongo:
+                  image: mongo:3.2-jessie
+                  restart: always
+                  volumes:
+                      - /vpn/data/mongo:/data/db
+
+    - name: Create Pritunl management script
+      copy:
+        dest: /vpn/pritunl
+        mode: '0755'
+        content: |
+          #!/bin/sh
+          docker exec -it $(docker ps | grep pritunl | grep -o '^\S\+') pritunl $@
+
+    - name: Launch VPN service
+      command: docker-compose up -d
+      args:
+        chdir: /vpn
